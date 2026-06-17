@@ -1,4 +1,4 @@
-import type { FileMetric, FullReport } from "./types.ts";
+import type { FileMetric, FolderReport, FullReport } from "./types.ts";
 import { getMetricEntry } from "./glossary.ts";
 
 function fmtNum(n: number): string {
@@ -75,14 +75,174 @@ function sectionHeader(title: string): string {
   return `<tr class="section-row"><td colspan="5">${title}</td></tr>`;
 }
 
+function singleRow(
+  label: string,
+  val: string | number,
+): string {
+  const v = typeof val === "number" && val > 999 ? fmtNum(val) : String(val);
+  const entry = getMetricEntry(label);
+  const labelHtml = entry
+    ? `<span class="has-tip" tabindex="0">${label}<span class="tip-icon">?</span><span class="tooltip"><strong>${
+      escAttr(entry.short)
+    }</strong><br><br><em>How it's calculated:</em> ${
+      escAttr(entry.calc)
+    }<br><br><em>What it means:</em> ${escAttr(entry.meaning)}</span></span>`
+    : label;
+  return `<tr><td>${labelHtml}</td><td class="num">${v}</td></tr>`;
+}
+
+function generateSingleHtmlReport(
+  report: FullReport,
+  liveReloadScript: string,
+): string {
+  const f = report.folderA;
+  const langRows = Object.entries(f.scc).map(([lang, data]) =>
+    `<tr><td>${lang}</td><td class="num">${
+      fmtNum(data.files)
+    }</td><td class="num">${fmtNum(data.code)}</td><td class="num">${
+      fmtNum(data.complexity)
+    }</td></tr>`
+  ).join("\n");
+
+  const hotspotRows = f.topFiles.slice(0, 10).map((file) => {
+    const short = file.file.replace(f.path, "").replace(/^\//, "");
+    return `<tr><td>${short}</td><td class="num">${
+      fmtNum(file.code)
+    }</td><td class="num">${fmtNum(file.complexity)}</td></tr>`;
+  }).join("\n");
+
+  const beretSection = f.beret
+    ? `
+    ${sectionHeader("Structural Analysis (Beret)")}
+    ${singleRow("Functions", f.beret.architecture.counts.functions)}
+    ${singleRow("Classes", f.beret.architecture.counts.classes)}
+    ${singleRow("Test functions", f.beret.testing.test_functions)}
+    ${singleRow("Test ratio (%)", f.beret.testing.test_ratio_percent)}
+    <tr><td>Architecture layers</td><td class="num">${
+      f.beret.architecture.layers.join(", ") || "—"
+    }</td></tr>
+  `
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tweed — Codebase Analysis</title>
+${liveReloadScript}
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: "Red Hat Text", system-ui, sans-serif; background: #1b1d21; color: #e0e0e0; margin: 0; padding: 2rem; max-width: 900px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 2rem; margin-bottom: 0.25rem; }
+  .meta { text-align: center; color: #999; margin-bottom: 2rem; font-size: 0.875rem; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+  .summary-card { background: rgba(41,41,41,0.5); border: 1px solid #444; border-radius: 12px; padding: 1.25rem; text-align: center; }
+  .summary-card .value { font-size: 2.25rem; font-weight: 700; font-family: "Red Hat Mono", monospace; }
+  .summary-card .label { color: #999; font-size: 0.8rem; margin-top: 0.25rem; }
+  .summary-card.green .value { color: #92d68a; }
+  .summary-card.blue .value { color: #73bcf7; }
+  .summary-card.orange .value { color: #f4c145; }
+  table { width: 100%; border-collapse: collapse; margin: 0.5rem 0; font-size: 0.875rem; }
+  th { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 2px solid #444; color: #999; font-weight: 500; }
+  th.num { text-align: right; }
+  td { padding: 0.4rem 0.75rem; border-bottom: 1px solid #292929; }
+  tr:hover { background: rgba(255,255,255,0.03); }
+  .num { text-align: right; font-family: "Red Hat Mono", monospace; }
+  .section-row td { padding: 1rem 0.75rem 0.4rem; border-bottom: 1px solid #444; color: #73bcf7; font-weight: 600; font-size: 0.9rem; letter-spacing: 0.02em; }
+  .has-tip { position: relative; cursor: help; border-bottom: 1px dotted #666; }
+  .tip-icon { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; background: #444; color: #aaa; font-size: 0.65rem; font-weight: 700; margin-left: 5px; vertical-align: middle; line-height: 1; }
+  .tooltip { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 100; width: 380px; max-width: 90vw; padding: 0.85rem 1rem; background: #2a2a2e; border: 1px solid #555; border-radius: 8px; color: #ccc; font-size: 0.8rem; line-height: 1.5; font-weight: 400; box-shadow: 0 4px 16px rgba(0,0,0,0.4); pointer-events: none; }
+  .tooltip strong { color: #f0f0f0; font-size: 0.85rem; }
+  .tooltip em { color: #73bcf7; font-style: normal; font-weight: 600; }
+  .has-tip:hover .tooltip, .has-tip:focus .tooltip { display: block; }
+</style>
+</head>
+<body>
+<h1>Codebase Analysis</h1>
+<p class="meta">${f.label} &mdash; Generated ${new Date().toLocaleString()}</p>
+
+<div class="summary-grid">
+  <div class="summary-card green"><div class="value">${
+    fmtNum(f.totals.code)
+  }</div><div class="label">Lines of code</div></div>
+  <div class="summary-card green"><div class="value">${
+    fmtNum(f.totals.files)
+  }</div><div class="label">Source files</div></div>
+  <div class="summary-card blue"><div class="value">${f.ai.codeHealth}</div><div class="label">CodeHealth</div></div>
+  <div class="summary-card blue"><div class="value">${f.ai.clarity}</div><div class="label">LLM Clarity</div></div>
+  <div class="summary-card orange"><div class="value">$${
+    fmtNum(f.cocomo.estimatedCost)
+  }</div><div class="label">COCOMO cost</div></div>
+</div>
+
+<table>
+  <thead><tr><th>Metric</th><th class="num">Value</th></tr></thead>
+  <tbody>
+    ${sectionHeader("Code Size")}
+    ${singleRow("Source files", f.totals.files)}
+    ${singleRow("Lines of code", f.totals.code)}
+    ${singleRow("Comments", f.totals.comments)}
+
+    ${sectionHeader("Complexity")}
+    ${singleRow("Cyclomatic complexity", f.totals.complexity)}
+    ${singleRow("Cognitive complexity", f.ai.cognitiveComplexity)}
+    ${singleRow("Max nesting depth", f.ai.details.maxNestingDepth)}
+    ${singleRow("Avg function length", f.ai.details.avgFunctionLength)}
+    ${
+    singleRow("Conditional density (/100 LOC)", f.ai.details.conditionalDensity)
+  }
+    ${
+    singleRow("Conditionals per function", f.ai.details.condDensityPerFunction)
+  }
+
+    ${sectionHeader("Dependencies & Config")}
+    ${singleRow("Dependencies", f.dependencies.total)}
+    ${singleRow("Production deps", f.dependencies.production)}
+    ${singleRow("Dev deps", f.dependencies.development)}
+    ${singleRow("Config files", f.configFiles)}
+    ${singleRow("Build/task scripts", f.scripts)}
+
+    ${sectionHeader("AI Friendliness")}
+    ${singleRow("CodeHealth score (0-100)", f.ai.codeHealth)}
+    ${singleRow("LLM Clarity (0-100)", f.ai.clarity)}
+    ${singleRow("Naming score (0-100)", f.ai.details.namingScore)}
+    ${singleRow("Comment density (%)", f.ai.details.commentDensity)}
+
+    ${sectionHeader("Token Economy")}
+    ${singleRow("LLM context tokens", f.tokens.estimatedTokens)}
+    ${singleRow("Tokens per file", f.tokens.tokensPerFile)}
+    ${singleRow("Direct tokens", f.ai.tokenFanOut.direct)}
+    ${singleRow("Fan-out tokens", f.ai.tokenFanOut.fanOut)}
+    ${singleRow("Context fan-out total", f.ai.tokenFanOut.total)}
+    ${singleRow("Fan-out files", f.ai.tokenFanOut.fanOutFiles)}
+
+    ${sectionHeader("COCOMO Estimates")}
+    ${singleRow("Estimated cost ($)", f.cocomo.estimatedCost)}
+    ${singleRow("Schedule (months)", f.cocomo.scheduleMonths)}
+
+    ${beretSection}
+
+    ${sectionHeader("Language Breakdown")}
+    ${langRows}
+  </tbody>
+</table>
+
+<h2 style="border-bottom:1px solid #444;padding-bottom:0.5rem;color:#73bcf7;margin-top:2.5rem">Complexity Hotspots</h2>
+<p style="color:#999;font-size:0.875rem">Top 10 files by cyclomatic complexity</p>
+<table>
+  <thead><tr><th>File</th><th class="num">Code</th><th class="num">CC</th></tr></thead>
+  <tbody>${hotspotRows}</tbody>
+</table>
+
+</body>
+</html>`;
+}
+
 export function generateHtmlReport(
   report: FullReport,
   opts?: { liveReload?: boolean },
 ): string {
-  const d = report;
-  const labelA = d.folderA.label;
-  const labelB = d.folderB.label;
-
   const liveReloadScript = opts?.liveReload
     ? `<script>
   const es = new EventSource("/__sse");
@@ -90,6 +250,14 @@ export function generateHtmlReport(
   es.onerror = () => setTimeout(() => location.reload(), 2000);
 </script>`
     : "";
+
+  if (!report.folderB) {
+    return generateSingleHtmlReport(report, liveReloadScript);
+  }
+
+  const d = report as FullReport & { folderB: FolderReport };
+  const labelA = d.folderA.label;
+  const labelB = d.folderB.label;
 
   type SccVal = {
     files: number;

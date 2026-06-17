@@ -1,4 +1,9 @@
-import type { FileMetric, FullReport } from "./types.ts";
+import type {
+  ComparisonRow,
+  FileMetric,
+  FolderReport,
+  FullReport,
+} from "./types.ts";
 import { GLOSSARY } from "./glossary.ts";
 
 function fmtNum(n: number): string {
@@ -40,8 +45,210 @@ function hotspotTable(
   return lines.join("\n");
 }
 
+function singleMdRow(label: string, val: string | number): string {
+  return "| " + label + " | " +
+    (typeof val === "number" && val > 999 ? fmtNum(val) : String(val)) + " |";
+}
+
+function generateSingleMdReport(report: FullReport): string {
+  const f = report.folderA;
+  const sections: string[] = [];
+
+  sections.push(`# Codebase Analysis`);
+  sections.push("");
+  sections.push(
+    `**${f.label}** — Generated ${new Date().toLocaleString()}`,
+  );
+  sections.push("");
+
+  sections.push("## Summary");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(singleMdRow("Source files", f.totals.files));
+  sections.push(singleMdRow("Lines of code", f.totals.code));
+  sections.push(singleMdRow("Cyclomatic complexity", f.totals.complexity));
+  sections.push(
+    singleMdRow("Cognitive complexity", f.ai.cognitiveComplexity),
+  );
+  sections.push(singleMdRow("Dependencies", f.dependencies.total));
+  sections.push(singleMdRow("CodeHealth (0-100)", f.ai.codeHealth));
+  sections.push(singleMdRow("LLM Clarity (0-100)", f.ai.clarity));
+  sections.push(
+    singleMdRow("LLM context tokens", f.tokens.estimatedTokens),
+  );
+  sections.push(
+    singleMdRow("COCOMO estimated cost ($)", f.cocomo.estimatedCost),
+  );
+  sections.push("");
+
+  sections.push("## Code Size");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(singleMdRow("Source files", f.totals.files));
+  sections.push(singleMdRow("Lines of code", f.totals.code));
+  sections.push(singleMdRow("Comments", f.totals.comments));
+  sections.push("");
+
+  sections.push("## Complexity");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(singleMdRow("Cyclomatic complexity", f.totals.complexity));
+  sections.push(
+    singleMdRow("Cognitive complexity", f.ai.cognitiveComplexity),
+  );
+  sections.push(
+    singleMdRow("Max nesting depth", f.ai.details.maxNestingDepth),
+  );
+  sections.push(
+    singleMdRow("Avg function length", f.ai.details.avgFunctionLength),
+  );
+  sections.push(
+    singleMdRow(
+      "Conditional density (/100 LOC)",
+      f.ai.details.conditionalDensity,
+    ),
+  );
+  sections.push(
+    singleMdRow(
+      "Conditionals per function",
+      f.ai.details.condDensityPerFunction,
+    ),
+  );
+  sections.push("");
+
+  sections.push("## Dependencies & Config");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(singleMdRow("Dependencies", f.dependencies.total));
+  sections.push(singleMdRow("Production deps", f.dependencies.production));
+  sections.push(singleMdRow("Dev deps", f.dependencies.development));
+  sections.push(singleMdRow("Config files", f.configFiles));
+  sections.push(singleMdRow("Build/task scripts", f.scripts));
+  sections.push("");
+
+  sections.push("## AI Friendliness");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(singleMdRow("CodeHealth score (0-100)", f.ai.codeHealth));
+  sections.push(singleMdRow("LLM Clarity (0-100)", f.ai.clarity));
+  sections.push(
+    singleMdRow("Naming score (0-100)", f.ai.details.namingScore),
+  );
+  sections.push(
+    singleMdRow("Comment density (%)", f.ai.details.commentDensity),
+  );
+  sections.push("");
+
+  sections.push("## Token Economy");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(
+    singleMdRow("LLM context tokens", f.tokens.estimatedTokens),
+  );
+  sections.push(singleMdRow("Tokens per file", f.tokens.tokensPerFile));
+  sections.push(singleMdRow("Direct tokens", f.ai.tokenFanOut.direct));
+  sections.push(singleMdRow("Fan-out tokens", f.ai.tokenFanOut.fanOut));
+  sections.push(
+    singleMdRow("Context fan-out total", f.ai.tokenFanOut.total),
+  );
+  sections.push(
+    singleMdRow("Fan-out files", f.ai.tokenFanOut.fanOutFiles),
+  );
+  sections.push("");
+
+  sections.push("## COCOMO Estimates");
+  sections.push("");
+  sections.push("| Metric | Value |");
+  sections.push("|---|---:|");
+  sections.push(
+    singleMdRow("Estimated cost ($)", f.cocomo.estimatedCost),
+  );
+  sections.push(singleMdRow("Schedule (months)", f.cocomo.scheduleMonths));
+  sections.push("");
+
+  if (f.beret) {
+    sections.push("## Structural Analysis (Beret)");
+    sections.push("");
+    sections.push("| Metric | Value |");
+    sections.push("|---|---:|");
+    sections.push(
+      singleMdRow("Functions", f.beret.architecture.counts.functions),
+    );
+    sections.push(
+      singleMdRow("Classes", f.beret.architecture.counts.classes),
+    );
+    sections.push(
+      singleMdRow("Test functions", f.beret.testing.test_functions),
+    );
+    sections.push(
+      singleMdRow("Test ratio (%)", f.beret.testing.test_ratio_percent),
+    );
+    sections.push("");
+    sections.push(
+      `**Layers:** ${
+        f.beret.architecture.layers.join(", ") || "none detected"
+      }`,
+    );
+    sections.push("");
+  }
+
+  sections.push("## Language Breakdown");
+  sections.push("");
+  sections.push("| Language | Files | Code | Complexity |");
+  sections.push("|---|---:|---:|---:|");
+  for (const [lang, data] of Object.entries(f.scc)) {
+    sections.push(
+      `| ${lang} | ${data.files} | ${fmtNum(data.code)} | ${
+        fmtNum(data.complexity)
+      } |`,
+    );
+  }
+  sections.push("");
+
+  sections.push("## Complexity Hotspots");
+  sections.push("");
+  sections.push("Top 10 files by cyclomatic complexity");
+  sections.push("");
+  sections.push(hotspotTable(f.label, f.topFiles, f.path));
+  sections.push("");
+
+  sections.push("---");
+  sections.push("");
+  sections.push("## Glossary");
+  sections.push("");
+  sections.push(
+    "How each metric is calculated and what it means in practice.",
+  );
+  sections.push("");
+  for (const entry of GLOSSARY) {
+    sections.push(`### ${entry.name}`);
+    sections.push("");
+    sections.push(entry.short);
+    sections.push("");
+    sections.push(`**How it's calculated:** ${entry.calc}`);
+    sections.push("");
+    sections.push(`**What it means:** ${entry.meaning}`);
+    sections.push("");
+  }
+
+  return sections.join("\n");
+}
+
 export function generateMdReport(report: FullReport): string {
-  const d = report;
+  if (!report.folderB) {
+    return generateSingleMdReport(report);
+  }
+
+  const d = report as FullReport & {
+    folderB: FolderReport;
+    comparison: ComparisonRow[];
+  };
   const la = d.folderA.label;
   const lb = d.folderB.label;
 

@@ -136,11 +136,23 @@ export function startServer(
 </head>
 <body>
 <h1>Tweed Reports</h1>
-<ul>
-  <li><a href="/comparison.html">HTML Dashboard</a></li>
-  <li><a href="/comparison.md">Markdown Report</a></li>
-  <li><a href="/comparison.json">JSON Data</a></li>
-</ul>
+<ul id="links"></ul>
+<script>
+  const prefixes = ['analysis', 'comparison'];
+  const exts = [['html', 'HTML Dashboard'], ['md', 'Markdown Report'], ['json', 'JSON Data']];
+  const ul = document.getElementById('links');
+  for (const p of prefixes) {
+    for (const [ext, label] of exts) {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = '/' + p + '.' + ext;
+      a.textContent = label + ' (' + p + ')';
+      li.appendChild(a);
+      ul.appendChild(li);
+      fetch(a.href, {method:'HEAD'}).then(r => { if (!r.ok) li.style.display = 'none'; }).catch(() => li.style.display = 'none');
+    }
+  }
+</script>
 </body>
 </html>`;
       return new Response(html, {

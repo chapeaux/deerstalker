@@ -139,6 +139,6 @@ export interface ComparisonRow {
 export interface FullReport {
   timestamp: string;
   folderA: FolderReport;
-  folderB: FolderReport;
-  comparison: ComparisonRow[];
+  folderB?: FolderReport;
+  comparison?: ComparisonRow[];
 }

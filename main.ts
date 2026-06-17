@@ -127,17 +127,20 @@ for (let i = 0; i < args.length; i++) {
   positional.push(args[i]);
 }
 
-if (positional.length < 2) {
-  console.error(red("  Error: two folder paths required"));
-  console.error("  Usage: tweed <folder-a> <folder-b> [options]");
+if (positional.length < 1) {
+  console.error(red("  Error: at least one folder path required"));
+  console.error("  Usage: tweed <folder-a> [folder-b] [options]");
   Deno.exit(1);
 }
 
+const singleMode = positional.length === 1;
 const folderAPath = Deno.realPathSync(positional[0]);
-const folderBPath = Deno.realPathSync(positional[1]);
+const folderBPath = singleMode ? "" : Deno.realPathSync(positional[1]);
 
 const labelA = parseFlag(args, "--label-a", basename(folderAPath));
-const labelB = parseFlag(args, "--label-b", basename(folderBPath));
+const labelB = singleMode
+  ? ""
+  : parseFlag(args, "--label-b", basename(folderBPath));
 const outDir = parseFlag(
   args,
   "-o",
@@ -186,7 +189,9 @@ if (serveIdx !== -1) {
 const dirsA = srcA.length > 0
   ? srcA.map((s) => `${folderAPath}/${s}`)
   : [folderAPath];
-const dirsB = srcB.length > 0
+const dirsB = singleMode
+  ? []
+  : srcB.length > 0
   ? srcB.map((s) => `${folderBPath}/${s}`)
   : [folderBPath];
 
@@ -194,177 +199,209 @@ const deps = await ensureDeps(noBeret, (msg) => console.error(dim(`  ${msg}`)));
 setSccBin(deps.scc);
 if (deps.beret) setBeretBin(deps.beret);
 
-async function runAssessment(): Promise<FullReport> {
-  console.error("");
-  console.error(bold(cyan("  Tweed — Codebase Comparison")));
-  console.error(dim(`  A: ${folderAPath}`));
-  console.error(dim(`  B: ${folderBPath}`));
-  console.error("");
-
-  console.error(dim("  [1/7] Running scc..."));
-  const [sccA, sccB, filesA, filesB] = await Promise.all([
-    runScc(dirsA, excludeA),
-    runScc(dirsB, excludeB),
-    runSccByFile(dirsA, excludeA),
-    runSccByFile(dirsB, excludeB),
+async function collectFolder(
+  label: string,
+  path: string,
+  dirs: string[],
+  excludes: string[],
+  stepOffset: number,
+  totalSteps: number,
+): Promise<FolderReport> {
+  const pfx = singleMode ? "" : ` (${label})`;
+  console.error(
+    dim(`  [${stepOffset + 1}/${totalSteps}] Running scc${pfx}...`),
+  );
+  const [scc, files] = await Promise.all([
+    runScc(dirs, excludes),
+    runSccByFile(dirs, excludes),
   ]);
 
-  console.error(dim("  [2/7] Counting tokens..."));
-  const [tokensA, tokensB] = await Promise.all([
-    countTokens(dirsA, excludeA),
-    countTokens(dirsB, excludeB),
+  console.error(
+    dim(`  [${stepOffset + 2}/${totalSteps}] Counting tokens${pfx}...`),
+  );
+  const tokens = await countTokens(dirs, excludes);
+
+  console.error(
+    dim(`  [${stepOffset + 3}/${totalSteps}] Counting deps${pfx}...`),
+  );
+  const [depMetrics, configs, scripts] = await Promise.all([
+    countDeps(path),
+    countConfigFiles(path),
+    countScripts(path),
   ]);
 
-  console.error(dim("  [3/7] Counting dependencies..."));
-  const [depsA, depsB] = await Promise.all([
-    countDeps(folderAPath),
-    countDeps(folderBPath),
-  ]);
+  console.error(
+    dim(`  [${stepOffset + 4}/${totalSteps}] Computing AI metrics${pfx}...`),
+  );
+  const ai = await computeAiMetrics(dirs, excludes);
 
-  console.error(dim("  [4/7] Counting configs..."));
-  const [configsA, configsB, scriptsA, scriptsB] = await Promise.all([
-    countConfigFiles(folderAPath),
-    countConfigFiles(folderBPath),
-    countScripts(folderAPath),
-    countScripts(folderBPath),
-  ]);
-
-  console.error(dim("  [5/7] Computing AI metrics (A)..."));
-  const aiA = await computeAiMetrics(dirsA, excludeA);
-
-  console.error(dim("  [6/7] Computing AI metrics (B)..."));
-  const aiB = await computeAiMetrics(dirsB, excludeB);
-
-  let beretA, beretB;
+  let beret;
   if (deps.beret) {
-    console.error(dim("  [7/7] Running beret analysis..."));
-    [beretA, beretB] = await Promise.all([
-      collectBeretData(folderAPath, excludeA),
-      collectBeretData(folderBPath, excludeB),
-    ]);
-  } else {
-    console.error(dim("  [7/7] Skipping beret analysis"));
+    console.error(
+      dim(`  [${stepOffset + 5}/${totalSteps}] Running beret${pfx}...`),
+    );
+    beret = await collectBeretData(path, excludes);
   }
 
-  const totA = sccTotals(sccA);
-  const totB = sccTotals(sccB);
-  const cocomoA = cocomo(totA.code / 1000);
-  const cocomoB = cocomo(totB.code / 1000);
+  const totals = sccTotals(scc);
+  return {
+    label,
+    path,
+    scc: sccBreakdown(scc),
+    totals,
+    tokens,
+    dependencies: depMetrics,
+    configFiles: configs,
+    scripts,
+    cocomo: cocomo(totals.code / 1000),
+    topFiles: files,
+    ai,
+    beret,
+  };
+}
+
+async function runAssessment(): Promise<FullReport> {
+  console.error("");
+  if (singleMode) {
+    console.error(bold(cyan("  Tweed — Codebase Analysis")));
+    console.error(dim(`  ${folderAPath}`));
+  } else {
+    console.error(bold(cyan("  Tweed — Codebase Comparison")));
+    console.error(dim(`  A: ${folderAPath}`));
+    console.error(dim(`  B: ${folderBPath}`));
+  }
+  console.error("");
+
+  const stepsPerFolder = deps.beret ? 5 : 4;
+  const totalSteps = singleMode ? stepsPerFolder : stepsPerFolder * 2;
+
+  const folderA = await collectFolder(
+    labelA,
+    folderAPath,
+    dirsA,
+    excludeA,
+    0,
+    totalSteps,
+  );
+
+  if (singleMode) {
+    return { timestamp: new Date().toISOString(), folderA };
+  }
+
+  const folderB = await collectFolder(
+    labelB,
+    folderBPath,
+    dirsB,
+    excludeB,
+    stepsPerFolder,
+    totalSteps,
+  );
 
   const comparison: ComparisonRow[] = [
     {
       label: "Source files",
-      a: totA.files,
-      b: totB.files,
-      reduction: pct(totA.files, totB.files),
+      a: folderA.totals.files,
+      b: folderB.totals.files,
+      reduction: pct(folderA.totals.files, folderB.totals.files),
     },
     {
       label: "Lines of code",
-      a: totA.code,
-      b: totB.code,
-      reduction: pct(totA.code, totB.code),
+      a: folderA.totals.code,
+      b: folderB.totals.code,
+      reduction: pct(folderA.totals.code, folderB.totals.code),
     },
     {
       label: "Cyclomatic complexity",
-      a: totA.complexity,
-      b: totB.complexity,
-      reduction: pct(totA.complexity, totB.complexity),
+      a: folderA.totals.complexity,
+      b: folderB.totals.complexity,
+      reduction: pct(folderA.totals.complexity, folderB.totals.complexity),
     },
     {
       label: "Cognitive complexity",
-      a: aiA.cognitiveComplexity,
-      b: aiB.cognitiveComplexity,
-      reduction: pct(aiA.cognitiveComplexity, aiB.cognitiveComplexity),
+      a: folderA.ai.cognitiveComplexity,
+      b: folderB.ai.cognitiveComplexity,
+      reduction: pct(
+        folderA.ai.cognitiveComplexity,
+        folderB.ai.cognitiveComplexity,
+      ),
     },
     {
       label: "Comments",
-      a: totA.comments,
-      b: totB.comments,
-      reduction: pct(totA.comments, totB.comments),
+      a: folderA.totals.comments,
+      b: folderB.totals.comments,
+      reduction: pct(folderA.totals.comments, folderB.totals.comments),
     },
     {
       label: "Dependencies",
-      a: depsA.total,
-      b: depsB.total,
-      reduction: pct(depsA.total, depsB.total),
+      a: folderA.dependencies.total,
+      b: folderB.dependencies.total,
+      reduction: pct(folderA.dependencies.total, folderB.dependencies.total),
     },
     {
       label: "Config files",
-      a: configsA,
-      b: configsB,
-      reduction: pct(configsA, configsB),
+      a: folderA.configFiles,
+      b: folderB.configFiles,
+      reduction: pct(folderA.configFiles, folderB.configFiles),
     },
     {
       label: "Build/task scripts",
-      a: scriptsA,
-      b: scriptsB,
-      reduction: pct(scriptsA, scriptsB),
+      a: folderA.scripts,
+      b: folderB.scripts,
+      reduction: pct(folderA.scripts, folderB.scripts),
     },
     {
       label: "LLM context tokens",
-      a: tokensA.estimatedTokens,
-      b: tokensB.estimatedTokens,
-      reduction: pct(tokensA.estimatedTokens, tokensB.estimatedTokens),
+      a: folderA.tokens.estimatedTokens,
+      b: folderB.tokens.estimatedTokens,
+      reduction: pct(
+        folderA.tokens.estimatedTokens,
+        folderB.tokens.estimatedTokens,
+      ),
     },
     {
       label: "Context fan-out tokens",
-      a: aiA.tokenFanOut.total,
-      b: aiB.tokenFanOut.total,
-      reduction: pct(aiA.tokenFanOut.total, aiB.tokenFanOut.total),
+      a: folderA.ai.tokenFanOut.total,
+      b: folderB.ai.tokenFanOut.total,
+      reduction: pct(
+        folderA.ai.tokenFanOut.total,
+        folderB.ai.tokenFanOut.total,
+      ),
     },
     {
       label: "COCOMO estimated cost",
-      a: cocomoA.estimatedCost,
-      b: cocomoB.estimatedCost,
-      reduction: pct(cocomoA.estimatedCost, cocomoB.estimatedCost),
+      a: folderA.cocomo.estimatedCost,
+      b: folderB.cocomo.estimatedCost,
+      reduction: pct(
+        folderA.cocomo.estimatedCost,
+        folderB.cocomo.estimatedCost,
+      ),
     },
     {
       label: "COCOMO schedule (months)",
-      a: cocomoA.scheduleMonths,
-      b: cocomoB.scheduleMonths,
-      reduction: pct(cocomoA.scheduleMonths, cocomoB.scheduleMonths),
+      a: folderA.cocomo.scheduleMonths,
+      b: folderB.cocomo.scheduleMonths,
+      reduction: pct(
+        folderA.cocomo.scheduleMonths,
+        folderB.cocomo.scheduleMonths,
+      ),
     },
   ];
 
-  const folderA: FolderReport = {
-    label: labelA,
-    path: folderAPath,
-    scc: sccBreakdown(sccA),
-    totals: totA,
-    tokens: tokensA,
-    dependencies: depsA,
-    configFiles: configsA,
-    scripts: scriptsA,
-    cocomo: cocomoA,
-    topFiles: filesA,
-    ai: aiA,
-    beret: beretA,
+  return {
+    timestamp: new Date().toISOString(),
+    folderA,
+    folderB,
+    comparison,
   };
-
-  const folderB: FolderReport = {
-    label: labelB,
-    path: folderBPath,
-    scc: sccBreakdown(sccB),
-    totals: totB,
-    tokens: tokensB,
-    dependencies: depsB,
-    configFiles: configsB,
-    scripts: scriptsB,
-    cocomo: cocomoB,
-    topFiles: filesB,
-    ai: aiB,
-    beret: beretB,
-  };
-
-  return { timestamp: new Date().toISOString(), folderA, folderB, comparison };
 }
 
 async function writeReports(report: FullReport) {
   await Deno.mkdir(outDir, { recursive: true });
+  const prefix = singleMode ? "analysis" : "comparison";
 
   if (formats.includes("json")) {
     await Deno.writeTextFile(
-      `${outDir}/comparison.json`,
+      `${outDir}/${prefix}.json`,
       JSON.stringify(report, null, 2),
     );
   }
@@ -373,48 +410,80 @@ async function writeReports(report: FullReport) {
     const html = generateHtmlReport(report, {
       liveReload: servePort > 0 && watchMode,
     });
-    await Deno.writeTextFile(`${outDir}/comparison.html`, html);
+    await Deno.writeTextFile(`${outDir}/${prefix}.html`, html);
   }
 
   if (formats.includes("md")) {
     const md = generateMdReport(report);
-    await Deno.writeTextFile(`${outDir}/comparison.md`, md);
+    await Deno.writeTextFile(`${outDir}/${prefix}.md`, md);
   }
 }
 
 function printSummary(report: FullReport) {
   console.error("");
-  console.error(bold(green(`  Comparison: ${labelA} vs ${labelB}`)));
-  console.error(`  ${"=".repeat(72)}`);
-  console.error("");
+  const filePrefix = singleMode ? "analysis" : "comparison";
 
-  const hdr = `  ${"Metric".padEnd(28)}|${labelA.padStart(16)} |${
-    labelB.padStart(14)
-  } |${"Reduction".padStart(10)}`;
-  const sep = `  ${"─".repeat(28)}┼${"─".repeat(16)}─┼${"─".repeat(14)}─┼${
-    "─".repeat(10)
-  }`;
-  console.error(hdr);
-  console.error(sep);
-
-  for (const row of report.comparison) {
-    const a = typeof row.a === "number" && row.a > 999
-      ? fmtNum(row.a)
-      : String(row.a);
-    const b = typeof row.b === "number" && row.b > 999
-      ? fmtNum(row.b)
-      : String(row.b);
-    console.error(
-      `  ${row.label.padEnd(28)}|${a.padStart(16)} |${b.padStart(14)} |${
-        row.reduction.padStart(10)
-      }`,
-    );
+  if (singleMode) {
+    const f = report.folderA;
+    console.error(bold(green(`  Analysis: ${labelA}`)));
+    console.error(`  ${"=".repeat(50)}`);
+    console.error("");
+    const rows: [string, string | number][] = [
+      ["Source files", f.totals.files],
+      ["Lines of code", f.totals.code],
+      ["Cyclomatic complexity", f.totals.complexity],
+      ["Cognitive complexity", f.ai.cognitiveComplexity],
+      ["Comments", f.totals.comments],
+      ["Dependencies", f.dependencies.total],
+      ["Config files", f.configFiles],
+      ["Build/task scripts", f.scripts],
+      ["CodeHealth (0-100)", f.ai.codeHealth],
+      ["LLM Clarity (0-100)", f.ai.clarity],
+      ["LLM context tokens", f.tokens.estimatedTokens],
+      ["COCOMO estimated cost", f.cocomo.estimatedCost],
+      ["COCOMO schedule (months)", f.cocomo.scheduleMonths],
+    ];
+    const hdr = `  ${"Metric".padEnd(28)}|${"Value".padStart(16)}`;
+    const sep = `  ${"─".repeat(28)}┼${"─".repeat(16)}`;
+    console.error(hdr);
+    console.error(sep);
+    for (const [label, val] of rows) {
+      const v = typeof val === "number" && val > 999
+        ? fmtNum(val)
+        : String(val);
+      console.error(`  ${label.padEnd(28)}|${v.padStart(16)}`);
+    }
+  } else {
+    console.error(bold(green(`  Comparison: ${labelA} vs ${labelB}`)));
+    console.error(`  ${"=".repeat(72)}`);
+    console.error("");
+    const hdr = `  ${"Metric".padEnd(28)}|${labelA.padStart(16)} |${
+      labelB.padStart(14)
+    } |${"Reduction".padStart(10)}`;
+    const sep = `  ${"─".repeat(28)}┼${"─".repeat(16)}─┼${"─".repeat(14)}─┼${
+      "─".repeat(10)
+    }`;
+    console.error(hdr);
+    console.error(sep);
+    for (const row of report.comparison!) {
+      const a = typeof row.a === "number" && row.a > 999
+        ? fmtNum(row.a)
+        : String(row.a);
+      const b = typeof row.b === "number" && row.b > 999
+        ? fmtNum(row.b)
+        : String(row.b);
+      console.error(
+        `  ${row.label.padEnd(28)}|${a.padStart(16)} |${b.padStart(14)} |${
+          row.reduction.padStart(10)
+        }`,
+      );
+    }
   }
 
   console.error("");
   const written = formats.map((f) => {
     const ext = f === "md" ? "md" : f === "html" ? "html" : "json";
-    return `comparison.${ext}`;
+    return `${filePrefix}.${ext}`;
   }).join(", ");
   console.error(`  ${green("Output:")} ${cyan(outDir)}/${written}`);
   console.error("");
@@ -449,7 +518,7 @@ if (watchMode) {
   ];
 
   await startWatcher({
-    dirs: [folderAPath, folderBPath],
+    dirs: singleMode ? [folderAPath] : [folderAPath, folderBPath],
     excludeDirs: allExcludes,
     onChange: async () => {
       console.error(dim("  Reassessing..."));
