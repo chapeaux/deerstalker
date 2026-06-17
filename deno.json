@@ -1,0 +1,20 @@
+{
+  "name": "tweed",
+  "version": "0.1.0",
+  "exports": "./main.ts",
+  "tasks": {
+    "compare": "deno run -A main.ts",
+    "compile": "deno compile -A -o tweed main.ts",
+    "check": "deno check main.ts && deno lint && deno fmt --check"
+  },
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.window"],
+    "strict": true
+  },
+  "fmt": {
+    "exclude": ["tweed-output/"]
+  },
+  "lint": {
+    "exclude": ["tweed-output/"]
+  }
+}

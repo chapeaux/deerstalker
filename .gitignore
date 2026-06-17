@@ -1,0 +1,24 @@
+# Compiled binary
+tweed
+tweed.exe
+
+# Output
+tweed-output/
+
+# Deno
+.deno/
+deno.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude
+.claude/
